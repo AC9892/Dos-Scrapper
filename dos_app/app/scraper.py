@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import html as html_lib
 import re
@@ -14,8 +14,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from dos_scraper.app.models import ScrapedPage, ScrapeSettings
-from dos_scraper.app.parser import parse_html
+from dos_app.app.models import ScrapedPage, ScrapeSettings
+from dos_app.app.parser import parse_html
 
 
 LogCallback = Callable[[str], None]

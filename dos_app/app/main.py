@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sys
 import json
@@ -50,11 +50,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from dos_scraper.app.exporters import companion_folder, export_results
-from dos_scraper.app.history import load_recent_jobs, save_recent_job
-from dos_scraper.app.local_mirror import export_local_website
-from dos_scraper.app.models import ScrapedPage, ScrapeSettings
-from dos_scraper.app.scraper import ScrapeCallbacks, ScrapeEngine, normalize_url, normalized_mode, site_root
+from dos_app.app.exporters import companion_folder, export_results
+from dos_app.app.history import load_recent_jobs, save_recent_job
+from dos_app.app.local_mirror import export_local_website
+from dos_app.app.models import ScrapedPage, ScrapeSettings
+from dos_app.app.scraper import ScrapeCallbacks, ScrapeEngine, normalize_url, normalized_mode, site_root
 
 
 def app_icon_path() -> Path:

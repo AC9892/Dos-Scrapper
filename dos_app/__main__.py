@@ -1,4 +1,4 @@
-from dos_scraper.app.main import main
+﻿from dos_app.app.main import main
 
 
 if __name__ == "__main__":

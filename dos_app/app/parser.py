@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
-from dos_scraper.app.models import ScrapedPage
+from dos_app.app.models import ScrapedPage
 
 
 def parse_html(url: str, html: str, status_code: int | None = None, content_type: str = "") -> ScrapedPage:

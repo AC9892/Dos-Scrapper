@@ -1,13 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from dataclasses import asdict
 from pathlib import Path
 
-from dos_scraper.app.models import ScrapeSettings
+from dos_app.app.models import ScrapeSettings
 
 
-APP_DIR = Path.home() / ".dos_scraper"
+APP_DIR = Path.home() / ".dos_app"
 HISTORY_FILE = APP_DIR / "recent_jobs.json"
 
 

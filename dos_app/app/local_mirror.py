@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import html as html_module
@@ -13,7 +13,7 @@ from urllib.parse import unquote, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from dos_scraper.app.models import ScrapedPage
+from dos_app.app.models import ScrapedPage
 
 
 ASSET_TAGS = [

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import csv
 import html
@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from dos_scraper.app.models import ScrapedPage
+from dos_app.app.models import ScrapedPage
 
 
 EXPORT_COLUMNS = [
