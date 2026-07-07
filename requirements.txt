@@ -1,0 +1,7 @@
+PySide6>=6.7
+beautifulsoup4>=4.12
+requests>=2.32
+lxml>=5.2
+
+# Optional JavaScript rendering mode:
+# playwright>=1.45

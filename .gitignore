@@ -1,0 +1,40 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build and packaging outputs
+build/
+dist/
+*.spec
+*.manifest
+*.exe
+*.msi
+
+# Runtime scrape/export output
+exports/*
+!exports/.gitkeep
+
+# Local UI/code backups created during iteration
+backups/
+
+# Local agent/workspace metadata
+.agents/
+.codex/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.tmp
