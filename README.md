@@ -2,8 +2,19 @@
 
 DOS Scraper is a Windows-friendly desktop internet scraper built with Python, PySide6, Requests, and BeautifulSoup. It is a native GUI app, not a web app. The app is designed for collecting page text, links, images, metadata, and local offline snapshots from websites you are allowed to access.
 
-## What It Does
+## Authorized Use Disclaimer
 
+DOS Scraper is provided for educational, research, archival, development, and authorized testing purposes only.
+
+Users are responsible for ensuring they have permission to access, scrape, crawl, download, or otherwise interact with any website, server, or service they target. Users are also responsible for complying with applicable laws, website terms of service, `robots.txt` policies, rate limits, and other restrictions imposed by the target service.
+
+The developers and contributors of DOS Scraper are not responsible for misuse of the software, unauthorized scraping, service disruption, excessive network traffic, data loss, account restrictions, legal consequences, or violations of third-party terms or policies.
+
+Features such as bandwidth controls, request limits, crawl boundaries, URL filtering, and `robots.txt` support are provided to help users operate the scraper responsibly. They do not grant permission to access or collect content that the user is otherwise unauthorized to access.
+
+**Only use DOS Scraper against websites and resources that you own, have permission to access, or are otherwise legally permitted to scrape.**
+
+## What It Does
 - Scrapes single pages, crawls websites, scans page neighborhoods, and imports sitemap URLs.
 - Extracts titles, descriptions, keywords, canonical URLs, page text, links, images, status codes, content types, redirect counts, response timing, retry counts, and resource metadata.
 - Shows live progress, logs, skipped URL reasons, and a searchable results table.
@@ -246,7 +257,7 @@ Optional:
 
 To speed up safe, permitted scans:
 
-- Set delay to `0` or a small value like `0.10`.
+- Start with a conservative delay and increase throughput only when appropriate for the target
 - Keep Playwright off unless the page needs JavaScript rendering.
 - Keep direct media/file skipping enabled for normal page discovery.
 - Lower max pages while testing.
@@ -333,4 +344,15 @@ run.bat
 
 ## Responsible Use
 
-Use DOS Scraper only on sites you are allowed to scrape. Keep `robots.txt` enabled unless you have a clear reason and permission to disable it. Use conservative rate limits for larger crawls.
+Use DOS Scraper only on websites and resources you are authorized to scrape.
+
+For larger crawls:
+
+- Respect the target site's policies and `robots.txt`.
+- Use reasonable request and concurrency limits.
+- Configure bandwidth limits where appropriate.
+- Avoid unnecessarily downloading large resources.
+- Use crawl boundaries and URL filters to prevent unintended crawling.
+- Stop or reduce a crawl if it is negatively affecting the target service.
+
+`robots.txt` enforcement is enabled by default and should generally remain enabled unless you have authorization and a specific reason to change it.
