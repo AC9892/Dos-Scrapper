@@ -192,7 +192,7 @@ The app detects common 404/not-found pages and skips them during local website e
 Recent scrape jobs are stored locally at:
 
 ```text
-~/.dos_app/recent_jobs.json
+C:\Users\{User}\.dos_app/recent_jobs.json
 ```
 
 This file is runtime data and should not be committed to GitHub.
