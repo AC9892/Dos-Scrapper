@@ -14,6 +14,8 @@ Features such as bandwidth controls, request limits, crawl boundaries, URL filte
 
 **Only use DOS Scraper against websites and resources that you own, have permission to access, or are otherwise legally permitted to scrape.**
 
+**The developer is not responsible for any scraping activity performed in violation of this requirement or for any misuse of DOS Scraper by its users.**
+
 ## What It Does
 - Scrapes single pages, crawls websites, scans page neighborhoods, and imports sitemap URLs.
 - Extracts titles, descriptions, keywords, canonical URLs, page text, links, images, status codes, content types, redirect counts, response timing, retry counts, and resource metadata.
