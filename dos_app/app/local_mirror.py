@@ -72,9 +72,12 @@ def export_local_website(
     progress: ProgressCallback | None = None,
     stop_event: Event | None = None,
 ) -> Path:
-    html_pages = [page for page in results if page.raw_html and not page.error and is_html_page(page)]
+    skipped_pages = [page for page in results if page.raw_html and is_html_page(page) and is_failed_or_not_found_page(page)]
+    html_pages = [page for page in results if page.raw_html and is_html_page(page) and not is_failed_or_not_found_page(page)]
     if not html_pages:
         raise ValueError("No HTML pages are available to export as a local website.")
+    if skipped_pages and log:
+        log(f"Skipped {len(skipped_pages)} failed/not-found page(s) during local website export.")
 
     folder = unique_folder(output_folder / folder_name(html_pages[0], multi_page=len(html_pages) > 1))
     assets_folder = folder / "assets"
@@ -537,10 +540,16 @@ def download_asset(
             log(f"Skipped asset ({exc}): {clean_url}")
         return None
 
-    path = assets_folder / asset_filename(clean_url, response.headers.get("content-type", ""))
+    content_type = response.headers.get("content-type", "")
+    if is_html_asset_response(response.content, content_type):
+        if log:
+            log(f"Skipped HTML asset: {clean_url}")
+        return None
+
+    path = assets_folder / asset_filename(clean_url, content_type)
     path.write_bytes(response.content)
     downloaded_assets[clean_url] = path
-    if is_css_asset(path, response.headers.get("content-type", "")):
+    if is_css_asset(path, content_type):
         rewrite_css_urls(path, clean_url, assets_folder, downloaded_assets, session, timeout_seconds, log, stop_event)
     return path
 
@@ -788,14 +797,42 @@ def write_open_this_file(folder: Path) -> None:
 def should_download_link(tag) -> bool:
     rel_values = {str(value).lower() for value in tag.get("rel", [])}
     href = str(tag.get("href", "")).lower()
+    if href.endswith((".html", ".htm")):
+        return False
     return bool(rel_values & {"stylesheet", "icon", "preload", "modulepreload"}) or href.endswith(
         (".css", ".ico", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".mp4", ".webm")
     )
 
 
+def is_html_asset_response(content: bytes, content_type: str) -> bool:
+    if "html" in content_type.lower():
+        return True
+    sample = content[:256].lstrip().lower()
+    return sample.startswith((b"<!doctype html", b"<html"))
+
+
 def is_html_page(page: ScrapedPage) -> bool:
     content_type = page.content_type.lower()
     return "html" in content_type or page.raw_html.lstrip().startswith(("<!doctype", "<html"))
+
+
+def is_failed_or_not_found_page(page: ScrapedPage) -> bool:
+    if page.error:
+        return True
+    if page.status_code is not None and page.status_code >= 400:
+        return True
+
+    title = (page.title or "").strip().lower()
+    text = (page.text or "")[:4000].lower()
+    html = (page.raw_html or "")[:8000].lower()
+    not_found_phrases = (
+        "sorry, we couldn't find this page",
+        "sorry, we could not find this page",
+        "couldn't find this page",
+        "could not find this page",
+        "page not found",
+    )
+    return bool(re.search(r"\b404\b", title)) or any(phrase in text or phrase in html for phrase in not_found_phrases)
 
 
 def folder_name(page: ScrapedPage, multi_page: bool) -> str:

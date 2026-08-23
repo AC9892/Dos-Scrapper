@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -55,6 +56,7 @@ from dos_app.app.history import load_recent_jobs, save_recent_job
 from dos_app.app.local_mirror import export_local_website
 from dos_app.app.models import ScrapedPage, ScrapeSettings
 from dos_app.app.scraper import ScrapeCallbacks, ScrapeEngine, normalize_url, normalized_mode, site_root
+from dos_app.app.url_controls import validate_filter_rule
 
 
 def app_icon_path() -> Path:
@@ -71,6 +73,7 @@ class ScrapeWorker(QObject):
         super().__init__()
         self.settings = settings
         self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
 
     @Slot()
     def run(self) -> None:
@@ -79,9 +82,44 @@ class ScrapeWorker(QObject):
             result=self.result.emit,
             progress=self.progress.emit,
         )
-        engine = ScrapeEngine(self.settings, callbacks, self.stop_event)
+        engine = ScrapeEngine(self.settings, callbacks, self.stop_event, self.pause_event)
         results = engine.run()
         self.finished.emit(results)
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.pause_event.clear()
+
+    def toggle_pause(self) -> bool:
+        if self.pause_event.is_set():
+            self.pause_event.clear()
+            return False
+        self.pause_event.set()
+        return True
+
+
+class SitemapLoadWorker(QObject):
+    log = Signal(str)
+    finished = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, settings: ScrapeSettings) -> None:
+        super().__init__()
+        self.settings = settings
+        self.stop_event = threading.Event()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            callbacks = ScrapeCallbacks(
+                log=self.log.emit,
+                result=lambda _page: None,
+                progress=lambda _done, _total: None,
+            )
+            engine = ScrapeEngine(self.settings, callbacks, self.stop_event)
+            self.finished.emit(engine.collect_sitemap_urls())
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -164,6 +202,9 @@ class MainWindow(QMainWindow):
         self.results: list[ScrapedPage] = []
         self.worker: ScrapeWorker | None = None
         self.thread: QThread | None = None
+        self.sitemap_worker: SitemapLoadWorker | None = None
+        self.sitemap_thread: QThread | None = None
+        self.pending_sitemap_settings: ScrapeSettings | None = None
         self.export_worker: LocalWebsiteExportWorker | None = None
         self.export_thread: QThread | None = None
         self._closing = False
@@ -237,6 +278,36 @@ class MainWindow(QMainWindow):
         self.timeout_input.setRange(1, 300)
         self.timeout_input.setValue(15)
         self.timeout_input.setSuffix(" sec")
+        self.crawl_boundary_combo = QComboBox()
+        self.crawl_boundary_combo.addItems(["Exact Host", "Same Domain", "Same Domain + Subdomains", "Any Domain"])
+        self.max_concurrent_requests_input = QSpinBox()
+        self.max_concurrent_requests_input.setRange(1, 256)
+        self.max_concurrent_requests_input.setValue(8)
+        self.max_connections_per_domain_input = QSpinBox()
+        self.max_connections_per_domain_input.setRange(1, 128)
+        self.max_connections_per_domain_input.setValue(4)
+        self.requests_per_second_input = QDoubleSpinBox()
+        self.requests_per_second_input.setRange(0, 10000)
+        self.requests_per_second_input.setValue(0)
+        self.requests_per_second_input.setSuffix(" req/s")
+        self.bandwidth_limit_combo = QComboBox()
+        self.bandwidth_limit_combo.addItems(["Unlimited", "10 KB/s", "500 KB/s", "1 MB/s", "10 MB/s", "100 MB/s", "1 GB/s"])
+        self.max_file_size_combo = QComboBox()
+        self.max_file_size_combo.addItems(["Unlimited", "10 MB", "100 MB", "1 GB", "10 GB"])
+        self.retry_checkbox = QCheckBox("Retry failed requests")
+        self.retry_checkbox.setChecked(True)
+        self.max_retries_input = QSpinBox()
+        self.max_retries_input.setRange(0, 25)
+        self.max_retries_input.setValue(3)
+        self.retry_delay_input = QDoubleSpinBox()
+        self.retry_delay_input.setRange(0, 300)
+        self.retry_delay_input.setValue(2)
+        self.retry_delay_input.setSuffix(" sec")
+        self.exponential_backoff_checkbox = QCheckBox("Exponential backoff")
+        self.exponential_backoff_checkbox.setChecked(True)
+        self.max_redirects_input = QSpinBox()
+        self.max_redirects_input.setRange(0, 50)
+        self.max_redirects_input.setValue(10)
 
         self.user_agent_input = QLineEdit("DOS-Scraper/0.1 (+desktop app)")
         self.same_domain_checkbox = QCheckBox("Stay on same domain")
@@ -250,6 +321,44 @@ class MainWindow(QMainWindow):
         self.robots_check_button = QPushButton("Check robots.txt")
         self.robots_check_button.clicked.connect(self._check_robots_txt)
         self.playwright_checkbox = QCheckBox("Use Playwright rendering")
+        self.filter_mode_combo = QComboBox()
+        self.filter_mode_combo.addItems(["Blocklist", "Allowlist", "Blocklist + Allowlist"])
+        self.log_filtered_urls_checkbox = QCheckBox("Log filtered URLs")
+        self.log_filtered_urls_checkbox.setChecked(True)
+        self.ignored_query_params_input = QLineEdit("utm_source, utm_medium, utm_campaign, fbclid, gclid")
+        self.resource_type_checks: dict[str, QCheckBox] = {}
+        for resource_type, checked in (
+            ("HTML", True),
+            ("Images", True),
+            ("Videos", True),
+            ("Audio", True),
+            ("Documents", True),
+            ("Archives", True),
+            ("Scripts", True),
+            ("Stylesheets", True),
+            ("Fonts", True),
+            ("Other", True),
+        ):
+            checkbox = QCheckBox(resource_type)
+            checkbox.setChecked(checked)
+            self.resource_type_checks[resource_type] = checkbox
+        self.filter_table = QTableWidget(0, 4)
+        self.filter_table.setHorizontalHeaderLabels(["Enabled", "Type", "Rule", "Action"])
+        self.filter_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.filter_add_button = QPushButton("Add")
+        self.filter_add_button.clicked.connect(self._add_filter_rule)
+        self.filter_edit_button = QPushButton("Edit")
+        self.filter_edit_button.clicked.connect(self._edit_filter_rule)
+        self.filter_delete_button = QPushButton("Delete")
+        self.filter_delete_button.clicked.connect(self._delete_filter_rule)
+        self.filter_toggle_button = QPushButton("Enable/Disable")
+        self.filter_toggle_button.clicked.connect(self._toggle_filter_rule)
+        self.filter_import_button = QPushButton("Import")
+        self.filter_import_button.clicked.connect(self._import_filter_rules)
+        self.filter_export_button = QPushButton("Export")
+        self.filter_export_button.clicked.connect(self._export_filter_rules)
+        self.filter_reset_button = QPushButton("Reset Filters")
+        self.filter_reset_button.clicked.connect(self._reset_filter_settings)
 
         self.rules_preview = QPlainTextEdit()
         self.rules_preview.setReadOnly(True)
@@ -268,7 +377,7 @@ class MainWindow(QMainWindow):
         self.stop_button.clicked.connect(self._stop_scraping)
         self.pause_button = QPushButton("Pause")
         self.pause_button.setEnabled(False)
-        self.pause_button.clicked.connect(lambda: self._log("WARNING Pause/resume is not available for the current scraper worker. Use Stop to cancel."))
+        self.pause_button.clicked.connect(self._toggle_pause)
         self.settings_button = QPushButton("Settings")
         self.settings_button.clicked.connect(self._open_settings_panel)
         self.help_button = QPushButton("Help")
@@ -426,8 +535,17 @@ class MainWindow(QMainWindow):
                 [
                     ("Max Pages", self.max_pages_input),
                     ("Crawl Depth", self.crawl_depth_input),
+                    ("Crawl Boundary", self.crawl_boundary_combo),
                     ("Delay", self.delay_input),
+                    ("Requests/sec", self.requests_per_second_input),
                     ("Timeout", self.timeout_input),
+                    ("Bandwidth", self.bandwidth_limit_combo),
+                    ("Max File Size", self.max_file_size_combo),
+                    ("Concurrent Requests", self.max_concurrent_requests_input),
+                    ("Per-Domain Connections", self.max_connections_per_domain_input),
+                    ("Max Redirects", self.max_redirects_input),
+                    ("Max Retries", self.max_retries_input),
+                    ("Retry Delay", self.retry_delay_input),
                     ("User Agent", self.user_agent_input),
                 ]
             ),
@@ -445,9 +563,39 @@ class MainWindow(QMainWindow):
             self.skip_media_checkbox,
             self.robots_checkbox,
             self.playwright_checkbox,
+            self.retry_checkbox,
+            self.exponential_backoff_checkbox,
+            self.log_filtered_urls_checkbox,
         ):
             filter_layout.addWidget(widget)
         filter_layout.addWidget(self.robots_check_button)
+        filter_layout.addWidget(QLabel("Filtering Mode"))
+        filter_layout.addWidget(self.filter_mode_combo)
+        filter_layout.addWidget(QLabel("Ignored Query Params"))
+        filter_layout.addWidget(self.ignored_query_params_input)
+        filter_layout.addWidget(QLabel("Resource Types"))
+        resource_grid = QHBoxLayout()
+        left_resources = QVBoxLayout()
+        right_resources = QVBoxLayout()
+        for index, checkbox in enumerate(self.resource_type_checks.values()):
+            (left_resources if index % 2 == 0 else right_resources).addWidget(checkbox)
+        resource_grid.addLayout(left_resources)
+        resource_grid.addLayout(right_resources)
+        filter_layout.addLayout(resource_grid)
+        filter_layout.addWidget(QLabel("URL Filters"))
+        filter_layout.addWidget(self.filter_table)
+        filter_buttons = QHBoxLayout()
+        for button in (
+            self.filter_add_button,
+            self.filter_edit_button,
+            self.filter_delete_button,
+            self.filter_toggle_button,
+            self.filter_import_button,
+            self.filter_export_button,
+            self.filter_reset_button,
+        ):
+            filter_buttons.addWidget(button)
+        filter_layout.addLayout(filter_buttons)
         filter_layout.addStretch(1)
         self.sidebar_tabs.addItem(filters, "Filters")
 
@@ -576,6 +724,7 @@ class MainWindow(QMainWindow):
             ("errors", "Errors: 0"),
             ("elapsed", "Elapsed: 0s"),
             ("speed", "Speed: 0.00/s"),
+            ("network", "Network: Unlimited"),
             ("memory", "Memory: n/a"),
             ("cpu", "CPU: n/a"),
         ):
@@ -656,6 +805,17 @@ class MainWindow(QMainWindow):
             "crawl_depth": settings.crawl_depth,
             "delay_seconds": settings.delay_seconds,
             "timeout_seconds": settings.timeout_seconds,
+            "crawl_boundary": settings.crawl_boundary,
+            "bandwidth_limit_bytes_per_second": settings.bandwidth_limit_bytes_per_second,
+            "max_file_size_bytes": settings.max_file_size_bytes,
+            "max_concurrent_requests": settings.max_concurrent_requests,
+            "max_connections_per_domain": settings.max_connections_per_domain,
+            "requests_per_second": settings.requests_per_second,
+            "retry_failed_requests": settings.retry_failed_requests,
+            "max_retries": settings.max_retries,
+            "retry_delay_seconds": settings.retry_delay_seconds,
+            "exponential_backoff": settings.exponential_backoff,
+            "max_redirects": settings.max_redirects,
             "user_agent": settings.user_agent,
             "respect_robots": settings.respect_robots,
             "stay_on_same_domain": settings.stay_on_same_domain,
@@ -663,6 +823,11 @@ class MainWindow(QMainWindow):
             "only_crawl_start_links": settings.only_crawl_start_links,
             "skip_direct_media_files": settings.skip_direct_media_files,
             "use_playwright": settings.use_playwright,
+            "url_filter_mode": settings.url_filter_mode,
+            "url_filters": settings.url_filters,
+            "log_filtered_urls": settings.log_filtered_urls,
+            "allowed_resource_types": settings.allowed_resource_types,
+            "ignored_query_params": settings.ignored_query_params,
         }
 
     def _export_template(self) -> None:
@@ -692,9 +857,25 @@ class MainWindow(QMainWindow):
             ("crawl_depth_input", "crawl_depth"),
             ("delay_input", "delay_seconds"),
             ("timeout_input", "timeout_seconds"),
+            ("max_concurrent_requests_input", "max_concurrent_requests"),
+            ("max_connections_per_domain_input", "max_connections_per_domain"),
+            ("requests_per_second_input", "requests_per_second"),
+            ("max_retries_input", "max_retries"),
+            ("retry_delay_input", "retry_delay_seconds"),
+            ("max_redirects_input", "max_redirects"),
         ):
-            if key in payload:
+            if key in payload and payload[key] is not None:
                 getattr(self, widget_name).setValue(payload[key])
+        if payload.get("crawl_boundary"):
+            index = self.crawl_boundary_combo.findText(str(payload["crawl_boundary"]))
+            if index >= 0:
+                self.crawl_boundary_combo.setCurrentIndex(index)
+        if payload.get("url_filter_mode"):
+            index = self.filter_mode_combo.findText(str(payload["url_filter_mode"]))
+            if index >= 0:
+                self.filter_mode_combo.setCurrentIndex(index)
+        self._set_combo_by_bytes(self.bandwidth_limit_combo, payload.get("bandwidth_limit_bytes_per_second"))
+        self._set_combo_by_bytes(self.max_file_size_combo, payload.get("max_file_size_bytes"))
         if payload.get("user_agent"):
             self.user_agent_input.setText(str(payload["user_agent"]))
         for widget_name, key in (
@@ -704,10 +885,147 @@ class MainWindow(QMainWindow):
             ("start_links_checkbox", "only_crawl_start_links"),
             ("skip_media_checkbox", "skip_direct_media_files"),
             ("playwright_checkbox", "use_playwright"),
+            ("retry_checkbox", "retry_failed_requests"),
+            ("exponential_backoff_checkbox", "exponential_backoff"),
+            ("log_filtered_urls_checkbox", "log_filtered_urls"),
         ):
             if key in payload:
                 getattr(self, widget_name).setChecked(bool(payload[key]))
+        if isinstance(payload.get("url_filters"), list):
+            self.filter_table.setRowCount(0)
+            for rule in payload["url_filters"]:
+                if isinstance(rule, dict):
+                    self._append_filter_rule(rule)
+        if isinstance(payload.get("allowed_resource_types"), list):
+            allowed = {str(value) for value in payload["allowed_resource_types"]}
+            for name, checkbox in self.resource_type_checks.items():
+                checkbox.setChecked(name in allowed)
+        if isinstance(payload.get("ignored_query_params"), list):
+            self.ignored_query_params_input.setText(", ".join(str(value) for value in payload["ignored_query_params"]))
         self._log(f"SUCCESS Imported template: {name}")
+
+    def _set_combo_by_bytes(self, combo: QComboBox, value: object) -> None:
+        if value in {None, ""}:
+            combo.setCurrentText("Unlimited")
+            return
+        try:
+            byte_value = int(value)
+        except (TypeError, ValueError):
+            return
+        for index in range(combo.count()):
+            if self._parse_size_text(combo.itemText(index).replace("/s", "")) == byte_value:
+                combo.setCurrentIndex(index)
+                return
+
+    def _add_filter_rule(self) -> None:
+        rule = self._prompt_filter_rule()
+        if rule:
+            self._append_filter_rule(rule)
+
+    def _edit_filter_rule(self) -> None:
+        row = self.filter_table.currentRow()
+        if row < 0:
+            return
+        rule = self._prompt_filter_rule(self._filter_rule_from_row(row))
+        if rule:
+            self._set_filter_rule_row(row, rule)
+
+    def _delete_filter_rule(self) -> None:
+        row = self.filter_table.currentRow()
+        if row >= 0:
+            self.filter_table.removeRow(row)
+
+    def _toggle_filter_rule(self) -> None:
+        row = self.filter_table.currentRow()
+        if row < 0:
+            return
+        enabled = self.filter_table.item(row, 0).text() != "Yes"
+        self.filter_table.item(row, 0).setText("Yes" if enabled else "No")
+
+    def _import_filter_rules(self) -> None:
+        path_text, _ = QFileDialog.getOpenFileName(self, "Import URL filters", "", "JSON (*.json)")
+        if not path_text:
+            return
+        try:
+            rules = json.loads(Path(path_text).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.critical(self, "Filter import failed", str(exc))
+            return
+        if not isinstance(rules, list):
+            QMessageBox.critical(self, "Filter import failed", "Filter JSON must be a list of rules.")
+            return
+        self.filter_table.setRowCount(0)
+        for rule in rules:
+            if isinstance(rule, dict):
+                self._append_filter_rule(rule)
+        self._log(f"SUCCESS Imported {self.filter_table.rowCount()} filter rule(s).")
+
+    def _export_filter_rules(self) -> None:
+        path_text, _ = QFileDialog.getSaveFileName(self, "Export URL filters", "dos-url-filters.json", "JSON (*.json)")
+        if not path_text:
+            return
+        Path(path_text).write_text(json.dumps(self._filter_rules(), indent=2), encoding="utf-8")
+        self._log(f"SUCCESS Exported URL filters: {path_text}")
+
+    def _reset_filter_settings(self) -> None:
+        self.filter_mode_combo.setCurrentText("Blocklist")
+        self.filter_table.setRowCount(0)
+        self.log_filtered_urls_checkbox.setChecked(True)
+        self.ignored_query_params_input.setText("utm_source, utm_medium, utm_campaign, fbclid, gclid")
+        for checkbox in self.resource_type_checks.values():
+            checkbox.setChecked(True)
+        self.skip_media_checkbox.setChecked(True)
+        self.same_domain_checkbox.setChecked(True)
+        self.crawl_boundary_combo.setCurrentText("Exact Host")
+        self._update_rules_preview()
+        self._log("INFO Filter settings reset to safe defaults.")
+
+    def _prompt_filter_rule(self, existing: dict[str, object] | None = None) -> dict[str, object] | None:
+        existing = existing or {"enabled": True, "type": "Prefix", "rule": "", "action": "Block"}
+        rule_types = ["Prefix", "Domain", "Path Contains", "Exact URL", "File Extension", "Wildcard", "Regex"]
+        actions = ["Block", "Allow"]
+        rule_type, ok = QInputDialog.getItem(self, "Filter Type", "Type", rule_types, max(0, rule_types.index(str(existing.get("type", "Prefix"))) if str(existing.get("type", "Prefix")) in rule_types else 0), False)
+        if not ok:
+            return None
+        rule_value, ok = QInputDialog.getText(self, "Filter Rule", "Rule", text=str(existing.get("rule", "")))
+        if not ok:
+            return None
+        error = validate_filter_rule(rule_type, rule_value)
+        if error:
+            QMessageBox.warning(self, "Invalid filter", error)
+            return None
+        action, ok = QInputDialog.getItem(self, "Filter Action", "Action", actions, max(0, actions.index(str(existing.get("action", "Block"))) if str(existing.get("action", "Block")) in actions else 0), False)
+        if not ok:
+            return None
+        return {"enabled": bool(existing.get("enabled", True)), "type": rule_type, "rule": rule_value.strip(), "action": action}
+
+    def _append_filter_rule(self, rule: dict[str, object]) -> None:
+        row = self.filter_table.rowCount()
+        self.filter_table.insertRow(row)
+        self._set_filter_rule_row(row, rule)
+
+    def _set_filter_rule_row(self, row: int, rule: dict[str, object]) -> None:
+        values = [
+            "Yes" if rule.get("enabled", True) else "No",
+            str(rule.get("type", "Prefix")),
+            str(rule.get("rule", "")),
+            str(rule.get("action", "Block")),
+        ]
+        for column, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
+            self.filter_table.setItem(row, column, item)
+
+    def _filter_rule_from_row(self, row: int) -> dict[str, object]:
+        return {
+            "enabled": self.filter_table.item(row, 0).text() == "Yes",
+            "type": self.filter_table.item(row, 1).text(),
+            "rule": self.filter_table.item(row, 2).text(),
+            "action": self.filter_table.item(row, 3).text(),
+        }
+
+    def _filter_rules(self) -> list[dict[str, object]]:
+        return [self._filter_rule_from_row(row) for row in range(self.filter_table.rowCount())]
 
     def _show_help(self) -> None:
         QMessageBox.information(
@@ -756,6 +1074,13 @@ class MainWindow(QMainWindow):
         self._set_status_text("pages", f"Pages: {len(self.results)}")
         self._set_status_text("queue", f"Queue: {values['queue']}")
         self._set_status_text("errors", f"Errors: {self.error_count}")
+        try:
+            settings = self._settings()
+            bandwidth = self.bandwidth_limit_combo.currentText()
+            rps = "Unlimited" if settings.requests_per_second is None else f"{settings.requests_per_second:g} req/s"
+            self._set_status_text("network", f"Network: {bandwidth}, {rps}")
+        except Exception:  # noqa: BLE001 - status refresh should never interrupt the UI.
+            pass
 
     def _filter_results(self, text: str) -> None:
         needle = text.strip().lower()
@@ -897,10 +1222,22 @@ class MainWindow(QMainWindow):
             return
         lines = [
             f"URL: {page.url}",
+            f"Final URL: {page.final_url}",
             f"Page Title: {page.title}",
             f"Meta Description: {page.description}",
             f"Keywords: {page.keywords}",
             f"Canonical URL: {page.canonical_url}",
+            f"Resource Type: {page.resource_type}",
+            f"Content Length: {page.content_length if page.content_length is not None else ''}",
+            f"Response Time: {page.response_time_ms if page.response_time_ms is not None else ''} ms",
+            f"Crawl Depth: {page.crawl_depth if page.crawl_depth is not None else ''}",
+            f"Discovered From: {page.discovered_from}",
+            f"Redirect Count: {page.redirect_count}",
+            f"Filter Status: {page.filter_status}",
+            f"Matched Filter: {page.matched_filter}",
+            f"Retry Count: {page.retry_count}",
+            f"Last Modified: {page.last_modified}",
+            f"ETag: {page.etag}",
             f"Page Size: {len(page.raw_html.encode('utf-8')) if page.raw_html else len(page.text.encode('utf-8'))} bytes",
             f"Content Type: {page.content_type}",
             f"HTTP Status: {page.status_code}",
@@ -1002,9 +1339,10 @@ class MainWindow(QMainWindow):
         self.error_count = sum(1 for page in self.results if page.error)
 
     def _settings(self) -> ScrapeSettings:
+        mode = normalized_mode(self.mode_combo.currentText())
         return ScrapeSettings(
             url=self.url_input.text().strip(),
-            mode=normalized_mode(self.mode_combo.currentText()),
+            mode=mode,
             delay_seconds=float(self.delay_input.value()),
             max_pages=int(self.max_pages_input.value()),
             crawl_depth=int(self.crawl_depth_input.value()),
@@ -1012,12 +1350,42 @@ class MainWindow(QMainWindow):
             user_agent=self.user_agent_input.text().strip() or "DOS-Scraper/0.1 (+desktop app)",
             respect_robots=self.robots_checkbox.isChecked(),
             stay_on_same_domain=self.same_domain_checkbox.isChecked(),
-            restrict_to_starting_path=self.path_checkbox.isChecked(),
-            only_crawl_start_links=self.start_links_checkbox.isChecked(),
+            restrict_to_starting_path=self.path_checkbox.isChecked() and mode == "Page and Beyond",
+            only_crawl_start_links=self.start_links_checkbox.isChecked() and mode == "Page and Beyond",
             skip_direct_media_files=self.skip_media_checkbox.isChecked(),
             use_playwright=self.playwright_checkbox.isChecked(),
+            crawl_boundary=self.crawl_boundary_combo.currentText(),
+            url_filter_mode=self.filter_mode_combo.currentText(),
+            url_filters=self._filter_rules(),
+            log_filtered_urls=self.log_filtered_urls_checkbox.isChecked(),
+            allowed_resource_types=[name for name, checkbox in self.resource_type_checks.items() if checkbox.isChecked()],
+            ignored_query_params=[param.strip() for param in self.ignored_query_params_input.text().split(",") if param.strip()],
+            max_file_size_bytes=self._parse_size_combo(self.max_file_size_combo.currentText()),
+            bandwidth_limit_bytes_per_second=self._parse_bandwidth_combo(self.bandwidth_limit_combo.currentText()),
+            max_concurrent_requests=int(self.max_concurrent_requests_input.value()),
+            max_connections_per_domain=int(self.max_connections_per_domain_input.value()),
+            requests_per_second=float(self.requests_per_second_input.value()) or None,
+            retry_failed_requests=self.retry_checkbox.isChecked(),
+            max_retries=int(self.max_retries_input.value()),
+            retry_delay_seconds=float(self.retry_delay_input.value()),
+            exponential_backoff=self.exponential_backoff_checkbox.isChecked(),
+            max_redirects=int(self.max_redirects_input.value()),
             output_folder=Path(self.output_folder_input.text()).expanduser(),
         )
+
+    def _parse_bandwidth_combo(self, value: str) -> int | None:
+        return self._parse_size_text(value.replace("/s", ""))
+
+    def _parse_size_combo(self, value: str) -> int | None:
+        return self._parse_size_text(value)
+
+    def _parse_size_text(self, value: str) -> int | None:
+        if value == "Unlimited":
+            return None
+        amount_text, unit = value.split()
+        amount = float(amount_text)
+        multipliers = {"KB": 1024, "MB": 1024**2, "GB": 1024**3}
+        return int(amount * multipliers[unit])
 
     def _connect_rule_preview(self) -> None:
         self.url_input.textChanged.connect(self._update_rules_preview)
@@ -1031,6 +1399,10 @@ class MainWindow(QMainWindow):
         self.crawl_depth_input.valueChanged.connect(self._update_rules_preview)
         self.delay_input.valueChanged.connect(self._update_rules_preview)
         self.timeout_input.valueChanged.connect(self._update_rules_preview)
+        self.crawl_boundary_combo.currentTextChanged.connect(self._update_rules_preview)
+        self.bandwidth_limit_combo.currentTextChanged.connect(self._update_rules_preview)
+        self.max_file_size_combo.currentTextChanged.connect(self._update_rules_preview)
+        self.filter_mode_combo.currentTextChanged.connect(self._update_rules_preview)
 
     def _scan_type_changed(self, scan_type: str) -> None:
         mode = normalized_mode(scan_type)
@@ -1056,6 +1428,10 @@ class MainWindow(QMainWindow):
                 self.crawl_depth_input.setValue(2)
             self.same_domain_checkbox.setChecked(True)
             self.start_links_checkbox.setChecked(True)
+        elif mode == "Sitemap":
+            self.same_domain_checkbox.setChecked(True)
+            self.path_checkbox.setChecked(False)
+            self.start_links_checkbox.setChecked(False)
 
     def _update_rules_preview(self, *_args: object) -> None:
         url = self.url_input.text().strip()
@@ -1078,6 +1454,11 @@ class MainWindow(QMainWindow):
         else:
             lines.append(f"Depth: {self.crawl_depth_input.value()}")
             lines.append(f"Max pages: {self.max_pages_input.value()}")
+        lines.append(f"Crawl boundary: {self.crawl_boundary_combo.currentText()}")
+        lines.append(f"Filtering mode: {self.filter_mode_combo.currentText()}")
+        lines.append(f"URL filters: {self.filter_table.rowCount()}")
+        lines.append(f"Bandwidth: {self.bandwidth_limit_combo.currentText()}")
+        lines.append(f"Max file size: {self.max_file_size_combo.currentText()}")
         lines.append(f"Direct media/file URLs: {'skipped' if self.skip_media_checkbox.isChecked() else 'scanned'}")
         lines.append(f"Robots.txt: {'respected' if self.robots_checkbox.isChecked() else 'not enforced'}")
         self.rules_preview.setPlainText("\n".join(lines))
@@ -1159,13 +1540,19 @@ class MainWindow(QMainWindow):
         if not settings.url:
             QMessageBox.warning(self, "Missing URL", "Enter a URL to scrape.")
             return
+        validation_error = self._validate_settings(settings)
+        if validation_error:
+            QMessageBox.warning(self, "Invalid settings", validation_error)
+            return
         if not self._ensure_output_folder(settings.output_folder):
             return
         if settings.mode == "Sitemap":
-            selected_urls = self._choose_sitemap_urls(settings)
-            if selected_urls is None:
-                return
-            settings.selected_sitemap_urls = selected_urls
+            self._start_sitemap_selection(settings)
+            return
+
+        self._begin_scraping(settings)
+
+    def _begin_scraping(self, settings: ScrapeSettings) -> None:
 
         self.results.clear()
         self.table.setRowCount(0)
@@ -1183,6 +1570,10 @@ class MainWindow(QMainWindow):
         self.last_progress_total = settings.max_pages
         self._update_stats()
         self._log("Starting scrape job.")
+        if settings.bandwidth_limit_bytes_per_second:
+            self._log(f"INFO Bandwidth limit: {self.bandwidth_limit_combo.currentText()} aggregate.")
+        if settings.url_filters:
+            self._log(f"INFO URL filtering enabled: {settings.url_filter_mode}, {len(settings.url_filters)} rule(s).")
         save_recent_job(settings)
 
         self.worker = ScrapeWorker(settings)
@@ -1202,36 +1593,74 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.pause_button.setEnabled(True)
+        self.pause_button.setText("Pause")
         self.status_timer.start()
         self._set_status_text("status", "Status: Scraping")
 
-    def _choose_sitemap_urls(self, settings: ScrapeSettings) -> list[str] | None:
+    def _start_sitemap_selection(self, settings: ScrapeSettings) -> None:
+        if self.sitemap_thread and self.sitemap_thread.isRunning():
+            QMessageBox.information(self, "Sitemap loading", "A sitemap is already loading.")
+            return
         self.log_view.clear()
         self._log("Loading sitemap URLs for selection.")
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            callbacks = ScrapeCallbacks(
-                log=self._log,
-                result=lambda _page: None,
-                progress=lambda _done, _total: None,
-            )
-            engine = ScrapeEngine(settings, callbacks, threading.Event())
-            urls = engine.collect_sitemap_urls()
-        finally:
-            QApplication.restoreOverrideCursor()
+        self.pending_sitemap_settings = settings
+        self.sitemap_worker = SitemapLoadWorker(settings)
+        self.sitemap_thread = QThread()
+        self.sitemap_worker.moveToThread(self.sitemap_thread)
+        self.sitemap_thread.started.connect(self.sitemap_worker.run)
+        self.sitemap_worker.log.connect(self._log)
+        self.sitemap_worker.finished.connect(self._sitemap_urls_loaded)
+        self.sitemap_worker.failed.connect(self._sitemap_load_failed)
+        self.sitemap_worker.finished.connect(self.sitemap_thread.quit)
+        self.sitemap_worker.failed.connect(self.sitemap_thread.quit)
+        self.sitemap_worker.finished.connect(self.sitemap_worker.deleteLater)
+        self.sitemap_worker.failed.connect(self.sitemap_worker.deleteLater)
+        self.sitemap_thread.finished.connect(self._sitemap_thread_finished)
+        self.sitemap_thread.finished.connect(self.sitemap_thread.deleteLater)
+        self.sitemap_thread.start()
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self._set_status_text("status", "Status: Loading sitemap")
+
+    @Slot(list)
+    def _sitemap_urls_loaded(self, urls: list[str]) -> None:
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        settings = self.pending_sitemap_settings
+        self.pending_sitemap_settings = None
 
         if not urls:
             QMessageBox.information(self, "No sitemap URLs", "No URLs were found in the sitemap.")
-            return None
+            self._set_status_text("status", "Status: Ready")
+            return
 
         dialog = SitemapSelectionDialog(urls, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
+            self._set_status_text("status", "Status: Ready")
+            return
         selected = dialog.selected_urls()
         if not selected:
             QMessageBox.information(self, "No URLs selected", "Select at least one sitemap URL to scan.")
-            return None
-        return selected[: settings.max_pages]
+            self._set_status_text("status", "Status: Ready")
+            return
+        if settings is None:
+            self._set_status_text("status", "Status: Ready")
+            return
+        settings.selected_sitemap_urls = selected[: settings.max_pages]
+        self._begin_scraping(settings)
+
+    @Slot(str)
+    def _sitemap_load_failed(self, message: str) -> None:
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.pending_sitemap_settings = None
+        self._set_status_text("status", "Status: Sitemap load failed")
+        QMessageBox.critical(self, "Sitemap load failed", message)
+
+    @Slot()
+    def _sitemap_thread_finished(self) -> None:
+        self.sitemap_worker = None
+        self.sitemap_thread = None
 
     def _ensure_output_folder(self, folder: Path) -> bool:
         try:
@@ -1241,18 +1670,53 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    def _validate_settings(self, settings: ScrapeSettings) -> str:
+        if not settings.allowed_resource_types:
+            return "Enable at least one resource type."
+        allowlist_modes = {"Allowlist", "Blocklist + Allowlist"}
+        if settings.url_filter_mode in allowlist_modes:
+            allow_rules = [
+                rule for rule in settings.url_filters
+                if rule.get("enabled", True) and str(rule.get("action", "Block")).lower() == "allow"
+            ]
+            if not allow_rules:
+                return "Allowlist mode needs at least one enabled Allow rule. Switch Filtering Mode to Blocklist or add an Allow rule."
+        if "HTML" not in settings.allowed_resource_types:
+            return "HTML resource type is disabled. Enable HTML Pages to scrape normal webpages."
+        for rule in settings.url_filters:
+            error = validate_filter_rule(str(rule.get("type", "")), str(rule.get("rule", "")))
+            if error:
+                return f"Invalid URL filter '{rule.get('rule', '')}': {error}"
+        return ""
+
     def _stop_scraping(self) -> None:
+        if self.sitemap_worker:
+            self.sitemap_worker.stop()
+            self._log("Sitemap load stop requested.")
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.pending_sitemap_settings = None
+            self._set_status_text("status", "Status: Stopping sitemap load")
         if self.worker:
             self.worker.stop()
             self._log("Stop requested.")
             self.stop_button.setEnabled(False)
             self.pause_button.setEnabled(False)
+            self.pause_button.setText("Pause")
             self._set_status_text("status", "Status: Stopping")
         if self.export_worker:
             self.export_worker.stop()
             self._log("Export stop requested.")
             self.stop_button.setEnabled(False)
             self._set_status_text("status", "Status: Stopping export")
+
+    def _toggle_pause(self) -> None:
+        if not self.worker:
+            return
+        paused = self.worker.toggle_pause()
+        self.pause_button.setText("Resume" if paused else "Pause")
+        self._set_status_text("status", "Status: Paused" if paused else "Status: Scraping")
+        self._log("INFO Scrape paused." if paused else "INFO Scrape resumed.")
 
     @Slot(str)
     def _log(self, message: str) -> None:
@@ -1295,10 +1759,10 @@ class MainWindow(QMainWindow):
             str(page.link_count),
             str(page.image_count),
             str(self._document_count(page)),
-            "n/a",
-            "",
+            "" if page.response_time_ms is None else f"{page.response_time_ms} ms",
+            page.last_modified,
             page.scraped_at,
-            "Error" if page.error else "Captured",
+            page.filter_status or ("Error" if page.error else "Captured"),
         ]
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
@@ -1317,6 +1781,7 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.pause_button.setEnabled(False)
+        self.pause_button.setText("Pause")
         self.progress.setValue(100)
         self.status_timer.stop()
         self._set_status_text("status", f"Status: Finished: {len(results)} page(s)")
@@ -1346,6 +1811,18 @@ class MainWindow(QMainWindow):
             if not self.thread.wait(5000):
                 event.ignore()
                 self.statusBar().showMessage("Still stopping. Try closing again in a moment.")
+                return
+        if self.sitemap_thread and self.sitemap_thread.isRunning():
+            self._closing = True
+            if self.sitemap_worker:
+                self.sitemap_worker.stop()
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(False)
+            self.statusBar().showMessage("Stopping sitemap loader before exit...")
+            self._log("Close requested. Waiting for sitemap loader to stop.")
+            if not self.sitemap_thread.wait(5000):
+                event.ignore()
+                self.statusBar().showMessage("Sitemap loader is still stopping. Try closing again in a moment.")
                 return
         if self.export_thread and self.export_thread.isRunning():
             self._closing = True
@@ -1475,6 +1952,20 @@ class MainWindow(QMainWindow):
         self.max_pages_input.setValue(int(job.get("max_pages", 25)))
         self.crawl_depth_input.setValue(int(job.get("crawl_depth", 2)))
         self.timeout_input.setValue(float(job.get("timeout_seconds", 15.0)))
+        self.max_concurrent_requests_input.setValue(int(job.get("max_concurrent_requests", 8)))
+        self.max_connections_per_domain_input.setValue(int(job.get("max_connections_per_domain", 4)))
+        self.requests_per_second_input.setValue(float(job.get("requests_per_second") or 0))
+        self.max_retries_input.setValue(int(job.get("max_retries", 3)))
+        self.retry_delay_input.setValue(float(job.get("retry_delay_seconds", 2.0)))
+        self.max_redirects_input.setValue(int(job.get("max_redirects", 10)))
+        boundary_index = self.crawl_boundary_combo.findText(str(job.get("crawl_boundary", "Exact Host")))
+        if boundary_index >= 0:
+            self.crawl_boundary_combo.setCurrentIndex(boundary_index)
+        filter_mode_index = self.filter_mode_combo.findText(str(job.get("url_filter_mode", "Blocklist")))
+        if filter_mode_index >= 0:
+            self.filter_mode_combo.setCurrentIndex(filter_mode_index)
+        self._set_combo_by_bytes(self.bandwidth_limit_combo, job.get("bandwidth_limit_bytes_per_second"))
+        self._set_combo_by_bytes(self.max_file_size_combo, job.get("max_file_size_bytes"))
         self.user_agent_input.setText(str(job.get("user_agent", "DOS-Scraper/0.1 (+desktop app)")))
         self.same_domain_checkbox.setChecked(bool(job.get("stay_on_same_domain", True)))
         self.path_checkbox.setChecked(bool(job.get("restrict_to_starting_path", False)))
@@ -1482,6 +1973,20 @@ class MainWindow(QMainWindow):
         self.skip_media_checkbox.setChecked(bool(job.get("skip_direct_media_files", True)))
         self.robots_checkbox.setChecked(bool(job.get("respect_robots", True)))
         self.playwright_checkbox.setChecked(bool(job.get("use_playwright", False)))
+        self.retry_checkbox.setChecked(bool(job.get("retry_failed_requests", True)))
+        self.exponential_backoff_checkbox.setChecked(bool(job.get("exponential_backoff", True)))
+        self.log_filtered_urls_checkbox.setChecked(bool(job.get("log_filtered_urls", True)))
+        if isinstance(job.get("url_filters"), list):
+            self.filter_table.setRowCount(0)
+            for rule in job["url_filters"]:
+                if isinstance(rule, dict):
+                    self._append_filter_rule(rule)
+        if isinstance(job.get("allowed_resource_types"), list):
+            allowed = {str(value) for value in job["allowed_resource_types"]}
+            for name, checkbox in self.resource_type_checks.items():
+                checkbox.setChecked(name in allowed)
+        if isinstance(job.get("ignored_query_params"), list):
+            self.ignored_query_params_input.setText(", ".join(str(value) for value in job["ignored_query_params"]))
         self.output_folder_input.setText(str(job.get("output_folder", Path.cwd() / "exports")))
         self._update_rules_preview()
 
