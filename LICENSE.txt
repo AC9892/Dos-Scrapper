@@ -1,30 +1,26 @@
 Custom Non-Commercial Software License (CNSL)
 Copyright (c) 2026 Air Conditioner
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction for **non-commercial purposes only**, including
-without limitation the rights to use, copy, modify, merge, publish, and distribute
-copies of the Software, subject to the following conditions:
+## Strict Non-Commercial Use and Distribution
 
-1. **Commercial use is strictly prohibited.**
-   This includes, but is not limited to:
+This Software is released free of charge and may be used, copied, modified, and redistributed solely for non-commercial purposes.
 
-   * Selling the Software
-   * Charging money for access to the Software
-   * Including the Software in any product or service that is sold
-   * Using the Software in a way that generates revenue
+**Neither the original Software nor any modified, derived, or redistributed version may be sold or commercially exploited.**
 
-2. The above copyright notice and this permission notice shall be included in all
-   copies or substantial portions of the Software.
+Without limitation, you may not:
 
-3. You may not sublicense or redistribute the Software under different terms that
-   would permit commercial use.
+* Sell the Software or modified versions of it.
+* Charge users to download, obtain, or access it.
+* Place it behind a paid subscription, membership, or other paywall.
+* Bundle or package it with a product or service being sold.
+* Pre-install it on hardware being sold as a feature or selling point.
+* Charge installation, licensing, activation, or access fees for it.
+* Rebrand or redistribute it as a commercial product.
+* Use its distribution as a direct source of revenue.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Free redistribution is permitted provided that the original copyright notice and this license remain included and the recipient receives the Software without charge. No fee may be charged for the Software's distribution, installation, access, licensing, activation, or inclusion with another product or service.
+
+Modifications and derivative versions must remain subject to these non-commercial restrictions when distributed.
+
+**Software released under this license is intended to remain freely available and may not be sold, monetized, converted into, incorporated into, or redistributed as part of a commercial offering.**
+
